@@ -261,7 +261,7 @@ void vPortTickISR(void)
 void vPortTaskEnterCritical( void )
 {
     /* Disable interrupts to create critical section */
-    portDISABLE_INTERRUPTS();
+    portDISABLE_INTERRUPTS();  //¹Ø×ÜÖÐ¶Ï
 
     /* Increment critical nesting count */
     portINCREMENT_CRITICAL_NESTING();

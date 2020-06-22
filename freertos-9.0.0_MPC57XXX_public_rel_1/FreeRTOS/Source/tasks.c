@@ -71,6 +71,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+
+
+//如果使用MPU(内存保护单元)封装的接口, 则所有的接口都用MPU接口封装过
 /* Defining MPU_WRAPPERS_INCLUDED_FROM_API_FILE prevents task.h from redefining
 all the API functions to use the MPU wrappers.  That should only be done when
 task.h is included from an application file. */
@@ -87,6 +90,10 @@ MPU ports require MPU_WRAPPERS_INCLUDED_FROM_API_FILE to be defined for the
 header files above, but not in this file, in order to generate the correct
 privileged Vs unprivileged linkage and placement. */
 #undef MPU_WRAPPERS_INCLUDED_FROM_API_FILE /*lint !e961 !e750. */
+
+
+
+
 
 /* Set configUSE_STATS_FORMATTING_FUNCTIONS to 2 to include the stats formatting
 functions but without including stdio.h here. */
@@ -285,6 +292,9 @@ count overflows. */
  */
 #define prvGetTCBFromHandle( pxHandle ) ( ( ( pxHandle ) == NULL ) ? ( TCB_t * ) pxCurrentTCB : ( TCB_t * ) ( pxHandle ) )
 
+
+
+
 /* The item value of the event list item is normally used to hold the priority
 of the task to which it belongs (coded to allow it to be held in reverse priority order).  
 However, it is occasionally borrowed for other purposes.  It is important its value is not 
@@ -346,9 +356,10 @@ typedef struct tskTaskControlBlock
 		UBaseType_t		uxTaskNumber;		/*< Stores a number specifically for use by third party trace code. */
 	#endif
 
+	//互斥信号量
 	#if ( configUSE_MUTEXES == 1 )
 		UBaseType_t		uxBasePriority;		/*< The priority last assigned to the task - used by the priority inheritance mechanism. */
-		UBaseType_t		uxMutexesHeld;
+		UBaseType_t		uxMutexesHeld;      /* 记录这个任务占了多少个mutex, 只有这个值为0, 任务才能恢复原来的优先级  */
 	#endif
 
 	//应用hook函数
@@ -360,7 +371,7 @@ typedef struct tskTaskControlBlock
 		void *pvThreadLocalStoragePointers[ configNUM_THREAD_LOCAL_STORAGE_POINTERS ];
 	#endif
 
-	//用来统计任务自创建依赖在run状态的时间
+	//用来统计任务自创建以来在run状态的时间
 	#if( configGENERATE_RUN_TIME_STATS == 1 )
 		uint32_t		ulRunTimeCounter;	/*< Stores the amount of time the task has spent in the Running state. */
 	#endif
@@ -417,7 +428,8 @@ PRIVILEGED_DATA static List_t xDelayedTaskList2;						/*< Delayed tasks (two lis
 PRIVILEGED_DATA static List_t * volatile pxDelayedTaskList;				/*< Points to the delayed task list currently being used. */
 PRIVILEGED_DATA static List_t * volatile pxOverflowDelayedTaskList;		/*< Points to the delayed task list currently being used to hold tasks that have overflowed the current tick count. */
 
-//这个是调度器关的时候才能修改的链表, 而且只有中断触发事件解锁的任务才会加到这个表
+//这个是调度器关的时候才能修改的链表, 而且只有中断触发事件解锁的任务才会加到这个表, 放的是EventItem
+//如果有中断触发任务被事件解锁要放到readyList, 放之前要判断调度器是不是锁住了
 PRIVILEGED_DATA static List_t xPendingReadyList;						/*< Tasks that have been readied while the scheduler was suspended.  They will be moved to the ready list when the scheduler is resumed. */
 
 #if( INCLUDE_vTaskDelete == 1 )
@@ -427,6 +439,11 @@ PRIVILEGED_DATA static List_t xPendingReadyList;						/*< Tasks that have been r
 
 #endif
 
+//这个是被suspend任务的链表, 和调度器suspend没有关系,
+//有两种情况任务可以加到这个链表: 1.主动调用vTaskSuspend(task), 2.等事件/等任务通知的任务且指定超时时间为portMAX_DELAY
+//suspend任务都是按先后顺序插入的, 这个链表中的任务不会再参与任务调度
+//调用vTaskResume(task)可以把任务加到readyList继续调度, 调用xTaskResumeFromISR(task)可以把任务加到pendingReadyList
+//只有主动调用vTaskSuspend()后被suspend的任务才能被resume, 等事件的任务可以调用xTaskAbortDelay()来resume
 #if ( INCLUDE_vTaskSuspend == 1 )
 
 	PRIVILEGED_DATA static List_t xSuspendedTaskList;					/*< Tasks that are currently suspended. */
@@ -460,11 +477,11 @@ accessed from a critical section. */
 //因为所有的任务切换都是通过vTaskSwitchContext()完成的
 //但是调度器锁住的时候vTaskSwitchContext()并不会执行任务切换
 //所以调度器锁住的时候会保持在当前任务, 直到调度器被解锁
-//需要记录下调度器锁住的时候是否有任务超时被解锁, 是否有事件被触发解锁
+//需要记录下调度器锁住的时候是否有任务超时被解锁, 是否有事件被触发解锁, 都会置xYieldPending标志位
 
-//什么时候要锁调度器:  希望当前任务一直执行不被切换, 保护的是一段比较耗时的代码, 不适合用临界区关中断来实现
-//锁调度器的时候中断可以触发, 但是中断中就不应该解锁新的任务了, 因为不希望任务链表被切换
-//被中断解锁的新的任务从event list中移除, 放到xSuspendedTaskList先暂存一下, 而且任务还是在delay list中,
+//什么时候要锁调度器:  希望当前任务一直执行不被切换, 保护的是一段比较耗时的代码, 不适合用临界区关中断来实现(长时间关中断可能错过tick)
+//锁调度器的时候中断可以触发, 但是中断中不应该解锁新的任务, 因为不希望任务链表被切换
+//被中断解锁的新的任务从event list中移除, 放到xPendingReadyList先暂存一下, 而且任务还是在delay list/suspend list中,
 PRIVILEGED_DATA static volatile UBaseType_t uxSchedulerSuspended	= ( UBaseType_t ) pdFALSE; //调度器有没有被锁住的标志
 
 #if ( configGENERATE_RUN_TIME_STATS == 1 )
@@ -475,13 +492,11 @@ PRIVILEGED_DATA static volatile UBaseType_t uxSchedulerSuspended	= ( UBaseType_t
 #endif
 
 /*lint +e956 */
-
-
-
-
-
-
 /*-----------------------------------------------------------*/
+
+
+
+
 
 /* Callback function prototypes. --------------------------*/
 #if(  configCHECK_FOR_STACK_OVERFLOW > 0 )
@@ -495,6 +510,9 @@ PRIVILEGED_DATA static volatile UBaseType_t uxSchedulerSuspended	= ( UBaseType_t
 #if( configSUPPORT_STATIC_ALLOCATION == 1 )
 	extern void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize );
 #endif
+
+
+
 
 /* File private functions. --------------------------------*/
 
@@ -639,6 +657,15 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB ) PRIVILEGED_FUNCTION;
 
 /*-----------------------------------------------------------*/
 
+
+
+
+
+
+
+
+
+
 #if( configSUPPORT_STATIC_ALLOCATION == 1 )
 
 	TaskHandle_t xTaskCreateStatic(	TaskFunction_t pxTaskCode,
@@ -652,8 +679,8 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB ) PRIVILEGED_FUNCTION;
 	TCB_t *pxNewTCB;
 	TaskHandle_t xReturn;
 
-		configASSERT( puxStackBuffer != NULL );
-		configASSERT( pxTaskBuffer != NULL );
+		configASSERT( puxStackBuffer != NULL );  //用做栈空间
+		configASSERT( pxTaskBuffer != NULL );    //用做TCB空间
 
 		if( ( pxTaskBuffer != NULL ) && ( puxStackBuffer != NULL ) )
 		{
@@ -796,7 +823,7 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB ) PRIVILEGED_FUNCTION;
 			}
 		}
 		#endif /* portSTACK_GROWTH */
-		//这里结束后只会等到一个栈的起始地址
+		//这里结束后只会拿到一个栈的起始地址
 		
 
 		//栈空间初始化和栈顶设置,以及其它TBC成员在Inite函数里面执行
@@ -870,7 +897,7 @@ UBaseType_t x;
 	by the port. */
 	#if( portSTACK_GROWTH < 0 )  //高地址往低地址
 	{
-		pxTopOfStack = pxNewTCB->pxStack + ( ulStackDepth - ( uint32_t ) 1 );
+		pxTopOfStack = pxNewTCB->pxStack + ( ulStackDepth - ( uint32_t ) 1 ); //-1表示指向栈顶
 		//地址对齐, 32bit对齐, 则地址末5位清0, 所以实际的栈顶地址并不是真正的计算得到的地址, 可能会少最多31个字节
 		pxTopOfStack = ( StackType_t * ) ( ( ( portPOINTER_SIZE_TYPE ) pxTopOfStack ) & ( ~( ( portPOINTER_SIZE_TYPE ) portBYTE_ALIGNMENT_MASK ) ) ); /*lint !e923 MISRA exception.  Avoiding casts between pointers and integers is not practical.  Size differences accounted for using portPOINTER_SIZE_TYPE type. */
 
@@ -1194,6 +1221,8 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 			not return. */
 			uxTaskNumber++;
 
+			
+
 			if( pxTCB == pxCurrentTCB )
 			{
 				/* A task is deleting itself.  This cannot complete within the
@@ -1247,6 +1276,12 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 
 #endif /* INCLUDE_vTaskDelete */
 /*-----------------------------------------------------------*/
+
+
+
+
+
+
 
 #if ( INCLUDE_vTaskDelayUntil == 1 )
 	//时间block API
@@ -1386,6 +1421,12 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 	}
 
 #endif /* INCLUDE_vTaskDelay */
+
+
+
+
+
+
 /*-----------------------------------------------------------*/
 
 #if( ( INCLUDE_eTaskGetState == 1 ) || ( configUSE_TRACE_FACILITY == 1 ) )
@@ -1428,7 +1469,7 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 					list.  Is it genuinely suspended or is it block
 					indefinitely? */
 					//这个条件是什么意思??为什么要判断事件链表为空?? --> 参考接口vTaskPlaceOnEventList, 放到事件链表的时候可能是被无限block而进入suspend状态
-					//这种情况下要算blocked, 而不是suspend
+					//这种情况下要算blocked, 而不是suspend, 放到pendingReadyList的也不算
 					
 					//有两种方式可以进到suspend状态, 主动调suspendTask, 或者放到事件链表中的任务指定任务超时时间无限大
 					if( listLIST_ITEM_CONTAINER( &( pxTCB->xEventListItem ) ) == NULL )
@@ -1465,6 +1506,10 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 
 #endif /* INCLUDE_eTaskGetState */
 /*-----------------------------------------------------------*/
+
+
+
+
 
 #if ( INCLUDE_uxTaskPriorityGet == 1 )
 
@@ -1711,6 +1756,11 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 #endif /* INCLUDE_vTaskPrioritySet */
 /*-----------------------------------------------------------*/
 
+
+
+
+
+
 #if ( INCLUDE_vTaskSuspend == 1 )
 
 	void vTaskSuspend( TaskHandle_t xTaskToSuspend )
@@ -1830,15 +1880,15 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 		if( listIS_CONTAINED_WITHIN( &xSuspendedTaskList, &( pxTCB->xStateListItem ) ) != pdFALSE )
 		{
 			//这里是什么意思??
-			//锁调度器的时候解锁的任务不算suspend任务, 从这里可以看到xPendingReadyList专门是给事件解锁的任务用的, 
-			//事件解锁的任务, TCB会同时放在suspend链表和pendingReady链表
+			//锁调度器的时候resume任务相当于被事件解锁, 从这里可以看到xPendingReadyList专门是给调度器锁住的时候解锁的任务用的, 
+			//resume解锁的任务, TCB会同时放在suspend链表(StateItem)和pendingReady链表(EventItem)
 			/* Has the task already been resumed from within an ISR? */
-			if( listIS_CONTAINED_WITHIN( &xPendingReadyList, &( pxTCB->xEventListItem ) ) == pdFALSE )
+			if( listIS_CONTAINED_WITHIN( &xPendingReadyList, &( pxTCB->xEventListItem ) ) == pdFALSE ) //已经被中断resume了
 			{
 				/* Is it in the suspended list because it is in the	Suspended
 				state, or because is is blocked with no timeout? */
-				//有两种方式可以进到suspend状态, 主动调suspendTask, 或者指定任务超时时间无限大
-				//这里的意思是 任务没有放到事件链表中?? suspend任务如果在等事件会有什么影响吗??
+				//有两种方式可以进到suspend状态, 主动调suspendTask, 或者指定等事件的任务超时时间无限大
+				//这里是判 是不是主动调用了suspendTask(), 被无限block的事件不算suspend任务, 那这些任务这么解锁??
 				if( listIS_CONTAINED_WITHIN( NULL, &( pxTCB->xEventListItem ) ) != pdFALSE )
 				{
 					xReturn = pdTRUE;
@@ -1982,7 +2032,7 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 					is held in the pending ready list until the scheduler is
 					unsuspended. */
 					//锁调度器的时候, delay和ready链表是不能操作的??
-					vListInsertEnd( &( xPendingReadyList ), &( pxTCB->xEventListItem ) );
+					vListInsertEnd( &( xPendingReadyList ), &( pxTCB->xEventListItem ) );   //相当于被解锁的事件
 				}
 			}
 			else
@@ -1998,6 +2048,10 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 
 #endif /* ( ( INCLUDE_xTaskResumeFromISR == 1 ) && ( INCLUDE_vTaskSuspend == 1 ) ) */
 /*-----------------------------------------------------------*/
+
+
+
+
 
 void vTaskStartScheduler( void )
 {
@@ -2320,6 +2374,11 @@ BaseType_t xAlreadyYielded = pdFALSE;
 }
 /*-----------------------------------------------------------*/
 
+
+
+
+
+
 TickType_t xTaskGetTickCount( void )
 {
 TickType_t xTicks;
@@ -2628,8 +2687,14 @@ implementations require configUSE_TICKLESS_IDLE to be set to a value other than
 #endif /* configUSE_TICKLESS_IDLE */
 /*----------------------------------------------------------*/
 
-#if ( INCLUDE_xTaskAbortDelay == 1 )
 
+
+
+
+
+#if ( INCLUDE_xTaskAbortDelay == 1 )
+	//把当前处于delay状态的任务结束等待, 强制放到readyList
+	
 	BaseType_t xTaskAbortDelay( TaskHandle_t xTask )
 	{
 	TCB_t *pxTCB = ( TCB_t * ) xTask;
@@ -2701,6 +2766,11 @@ implementations require configUSE_TICKLESS_IDLE to be set to a value other than
 
 #endif /* INCLUDE_xTaskAbortDelay */
 /*----------------------------------------------------------*/
+
+
+
+
+
 
 BaseType_t xTaskIncrementTick( void )
 {
@@ -4021,10 +4091,13 @@ TCB_t *pxTCB;
 
 #if ( configUSE_MUTEXES == 1 )
 	//优先级继承, 避免出现低优先级的任务比高优先级任务优先执行的情况
-	//
+	//例如低优先级的任务拿到了互斥信号量, 高优先级的任务在等这个互斥信号量
+	//但是中优先级的任务可以抢占低优先级的任务, 所以这种情况下低优先级的任务比高优先级的任务先执行
+
+	//解决方法是把拿到互斥信号量的低优先级的任务的优先级临时提高, 等它释放mutex的时候, 下一个执行的肯定是最高优先级的任务
 	void vTaskPriorityInherit( TaskHandle_t const pxMutexHolder )
 	{
-	TCB_t * const pxTCB = ( TCB_t * ) pxMutexHolder;
+	TCB_t * const pxTCB = ( TCB_t * ) pxMutexHolder;  //当前是哪个任务在占着mutex
 
 		/* If the mutex was given back by an interrupt while the queue was
 		locked then the mutex holder might now be NULL. */
@@ -4033,7 +4106,7 @@ TCB_t *pxTCB;
 			/* If the holder of the mutex has a priority below the priority of
 			the task attempting to obtain the mutex then it will temporarily
 			inherit the priority of the task attempting to obtain the mutex. */
-			if( pxTCB->uxPriority < pxCurrentTCB->uxPriority )
+			if( pxTCB->uxPriority < pxCurrentTCB->uxPriority )  //如果这个任务的优先级比当前任务的优先级要低, 则需要临时提升优先级
 			{
 				/* Adjust the mutex holder state to account for its new
 				priority.  Only reset the event list item value if the value is
@@ -4047,6 +4120,7 @@ TCB_t *pxTCB;
 					mtCOVERAGE_TEST_MARKER();
 				}
 
+				//需要调整任务优先级链表
 				/* If the task being modified is in the ready state it will need
 				to be moved into a new list. */
 				if( listIS_CONTAINED_WITHIN( &( pxReadyTasksLists[ pxTCB->uxPriority ] ), &( pxTCB->xStateListItem ) ) != pdFALSE )
@@ -4099,23 +4173,27 @@ TCB_t *pxTCB;
 			If the mutex is held by a task then it cannot be given from an
 			interrupt, and if a mutex is given by the holding task then it must
 			be the running state task. */
-			configASSERT( pxTCB == pxCurrentTCB );
+			configASSERT( pxTCB == pxCurrentTCB );  //只能反转当前任务的优先级
 
 			configASSERT( pxTCB->uxMutexesHeld );
 			( pxTCB->uxMutexesHeld )--;
 
 			/* Has the holder of the mutex inherited the priority of another
 			task? */
-			if( pxTCB->uxPriority != pxTCB->uxBasePriority )
+			if( pxTCB->uxPriority != pxTCB->uxBasePriority )  //有发生过优先级提升, 就要恢复回去
 			{
 				/* Only disinherit if no other mutexes are held. */
-				if( pxTCB->uxMutexesHeld == ( UBaseType_t ) 0 )
+				if( pxTCB->uxMutexesHeld == ( UBaseType_t ) 0 ) //这个任务占用的所有mutex都被释放了
 				{
 					/* A task can only have an inherited priority if it holds
 					the mutex.  If the mutex is held by a task then it cannot be
 					given from an interrupt, and if a mutex is given by the
 					holding	task then it must be the running state task.  Remove
 					the	holding task from the ready	list. */
+					//mutex不能在中断中被Give出来, 只能通过任务
+					//释放mutex的任务必定是当前任务
+					//只要有优先级继承, 就肯定是优先级被提升了
+					//所以这里直接从ready list移除了
 					if( uxListRemove( &( pxTCB->xStateListItem ) ) == ( UBaseType_t ) 0 )
 					{
 						taskRESET_READY_PRIORITY( pxTCB->uxPriority );
@@ -4128,11 +4206,13 @@ TCB_t *pxTCB;
 					/* Disinherit the priority before adding the task into the
 					new	ready list. */
 					traceTASK_PRIORITY_DISINHERIT( pxTCB, pxTCB->uxBasePriority );
+					//恢复优先级
 					pxTCB->uxPriority = pxTCB->uxBasePriority;
 
 					/* Reset the event list item value.  It cannot be in use for
 					any other purpose if this task is running, and it must be
 					running to give back the mutex. */
+					//重新加入新的ready list中
 					listSET_LIST_ITEM_VALUE( &( pxTCB->xEventListItem ), ( TickType_t ) configMAX_PRIORITIES - ( TickType_t ) pxTCB->uxPriority ); /*lint !e961 MISRA exception as the casts are only redundant for some ports. */
 					prvAddTaskToReadyList( pxTCB );
 
@@ -4510,10 +4590,10 @@ TickType_t uxReturn;
 		then pxCurrentTCB will be NULL. */
 		if( pxCurrentTCB != NULL )
 		{
-			( pxCurrentTCB->uxMutexesHeld )++;
+			( pxCurrentTCB->uxMutexesHeld )++;  //只有拿到mutex的任务才能嵌套
 		}
 
-		return pxCurrentTCB;
+		return pxCurrentTCB;   
 	}
 
 #endif /* configUSE_MUTEXES */

@@ -95,7 +95,8 @@ highest numbers as tmrFIRST_FROM_ISR_COMMAND is used to determine if the task
 or interrupt version of the queue send function should be used. */
 #define tmrCOMMAND_EXECUTE_CALLBACK_FROM_ISR 	( ( BaseType_t ) -2 )
 #define tmrCOMMAND_EXECUTE_CALLBACK				( ( BaseType_t ) -1 )
-#define tmrCOMMAND_START_DONT_TRACE				( ( BaseType_t ) 0 )
+
+#define tmrCOMMAND_START_DONT_TRACE				( ( BaseType_t ) 0 ) //restart- auto load
 #define tmrCOMMAND_START					    ( ( BaseType_t ) 1 )
 #define tmrCOMMAND_RESET						( ( BaseType_t ) 2 )
 #define tmrCOMMAND_STOP							( ( BaseType_t ) 3 )

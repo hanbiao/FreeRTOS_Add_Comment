@@ -70,6 +70,9 @@
 /* Standard includes. */
 #include <stdlib.h>
 
+
+
+
 /* Defining MPU_WRAPPERS_INCLUDED_FROM_API_FILE prevents task.h from redefining
 all the API functions to use the MPU wrappers.  That should only be done when
 task.h is included from an application file. */
@@ -80,8 +83,9 @@ task.h is included from an application file. */
 #include "queue.h"
 #include "timers.h"
 
+//INCLUDE_xTimerPendFunctionCall是用作守护进程, 用于处理从中断中发出来的消息
 #if ( INCLUDE_xTimerPendFunctionCall == 1 ) && ( configUSE_TIMERS == 0 )
-	#error configUSE_TIMERS must be set to 1 to make the xTimerPendFunctionCall() function available.
+	#error configUSE_TIMERS must be set to 1 to make the xTimerPendFunctionCall() function available.  //gcc编译器特性
 #endif
 
 /* Lint e961 and e750 are suppressed as a MISRA exception justified because the
@@ -91,11 +95,14 @@ privileged Vs unprivileged linkage and placement. */
 #undef MPU_WRAPPERS_INCLUDED_FROM_API_FILE /*lint !e961 !e750. */
 
 
+
+
+
 /* This entire source file will be skipped if the application is not configured
 to include software timer functionality.  This #if is closed at the very bottom
 of this file.  If you want to include software timer functionality then ensure
 configUSE_TIMERS is set to 1 in FreeRTOSConfig.h. */
-#if ( configUSE_TIMERS == 1 )
+#if ( configUSE_TIMERS == 1 )   //timer模块不是必需的, 可以选择不编进内核里
 
 /* Misc definitions. */
 #define tmrNO_DELAY		( TickType_t ) 0U
@@ -109,6 +116,8 @@ typedef struct tmrTimerControl
 	UBaseType_t				uxAutoReload;		/*<< Set to pdTRUE if the timer should be automatically restarted once expired.  Set to pdFALSE if the timer is, in effect, a one-shot timer. */
 	void 					*pvTimerID;			/*<< An ID to identify the timer.  This allows the timer to be identified when the same callback is used for multiple timers. */
 	TimerCallbackFunction_t	pxCallbackFunction;	/*<< The function that will be called when the timer expires. */
+
+
 	#if( configUSE_TRACE_FACILITY == 1 )
 		UBaseType_t			uxTimerNumber;		/*<< An ID assigned by trace tools such as FreeRTOS+Trace */
 	#endif
@@ -122,6 +131,9 @@ typedef struct tmrTimerControl
 name below to enable the use of older kernel aware debuggers. */
 typedef xTIMER Timer_t;
 
+
+
+
 /* The definition of messages that can be sent and received on the timer queue.
 Two types of message can be queued - messages that manipulate a software timer,
 and messages that request the execution of a non-timer related callback.  The
@@ -131,7 +143,7 @@ typedef struct tmrTimerParameters
 {
 	TickType_t			xMessageValue;		/*<< An optional value used by a subset of commands, for example, when changing the period of a timer. */
 	Timer_t *			pxTimer;			/*<< The timer to which the command will be applied. */
-} TimerParameter_t;
+} TimerParameter_t;   //timer命令是通过发queue消息来与timer任务来同步的
 
 
 typedef struct tmrCallbackParameters
@@ -139,7 +151,8 @@ typedef struct tmrCallbackParameters
 	PendedFunction_t	pxCallbackFunction;	/* << The callback function to execute. */
 	void *pvParameter1;						/* << The value that will be used as the callback functions first parameter. */
 	uint32_t ulParameter2;					/* << The value that will be used as the callback functions second parameter. */
-} CallbackParameters_t;
+} CallbackParameters_t;  //中断中发送消息来与守护进程来通信
+
 
 /* The structure that contains the two message types, along with an identifier
 that is used to determine which message type is valid. */
@@ -156,7 +169,12 @@ typedef struct tmrTimerQueueMessage
 			CallbackParameters_t xCallbackParameters;
 		#endif /* INCLUDE_xTimerPendFunctionCall */
 	} u;
-} DaemonTaskMessage_t;
+} DaemonTaskMessage_t;  //往timer queue 发消息的message item 
+
+
+
+
+
 
 /*lint -e956 A manual analysis and inspection has been used to determine which
 static variables must be declared volatile. */
@@ -164,14 +182,14 @@ static variables must be declared volatile. */
 /* The list in which active timers are stored.  Timers are referenced in expire
 time order, with the nearest expiry time at the front of the list.  Only the
 timer service task is allowed to access these lists. */
-PRIVILEGED_DATA static List_t xActiveTimerList1;
+PRIVILEGED_DATA static List_t xActiveTimerList1;  //记录多个timer的链表
 PRIVILEGED_DATA static List_t xActiveTimerList2;
 PRIVILEGED_DATA static List_t *pxCurrentTimerList;
 PRIVILEGED_DATA static List_t *pxOverflowTimerList;
 
 /* A queue that is used to send commands to the timer service task. */
-PRIVILEGED_DATA static QueueHandle_t xTimerQueue = NULL;
-PRIVILEGED_DATA static TaskHandle_t xTimerTaskHandle = NULL;
+PRIVILEGED_DATA static QueueHandle_t xTimerQueue = NULL;      //新建一个queue用来处理消息
+PRIVILEGED_DATA static TaskHandle_t xTimerTaskHandle = NULL;  //新建一个任务作为守护进程
 
 /*lint +e956 */
 
@@ -255,8 +273,8 @@ static void prvInitialiseNewTimer(	const char * const pcTimerName,
 									TimerCallbackFunction_t pxCallbackFunction,
 									Timer_t *pxNewTimer ) PRIVILEGED_FUNCTION; /*lint !e971 Unqualified char types are allowed for strings and single characters only. */
 /*-----------------------------------------------------------*/
-
-BaseType_t xTimerCreateTimerTask( void )
+//创建守护进程 timer task, 在调度器开启的时候自动创建, 同idle任务
+BaseType_t xTimerCreateTimerTask( void )  
 {
 BaseType_t xReturn = pdFAIL;
 
@@ -266,6 +284,7 @@ BaseType_t xReturn = pdFAIL;
 	been created then the initialisation will already have been performed. */
 	prvCheckForValidListAndQueue();
 
+	//必须先创建queue有效, 才能继续创建任务
 	if( xTimerQueue != NULL )
 	{
 		#if( configSUPPORT_STATIC_ALLOCATION == 1 )
@@ -309,6 +328,11 @@ BaseType_t xReturn = pdFAIL;
 }
 /*-----------------------------------------------------------*/
 
+
+
+
+
+//创建timer
 #if( configSUPPORT_DYNAMIC_ALLOCATION == 1 )
 
 	TimerHandle_t xTimerCreate(	const char * const pcTimerName,
@@ -319,11 +343,11 @@ BaseType_t xReturn = pdFAIL;
 	{
 	Timer_t *pxNewTimer;
 
-		pxNewTimer = ( Timer_t * ) pvPortMalloc( sizeof( Timer_t ) );
+		pxNewTimer = ( Timer_t * ) pvPortMalloc( sizeof( Timer_t ) );  //分配timer结构体的内存
 
 		if( pxNewTimer != NULL )
 		{
-			prvInitialiseNewTimer( pcTimerName, xTimerPeriodInTicks, uxAutoReload, pvTimerID, pxCallbackFunction, pxNewTimer );
+			prvInitialiseNewTimer( pcTimerName, xTimerPeriodInTicks, uxAutoReload, pvTimerID, pxCallbackFunction, pxNewTimer );  //结构体成员初始化
 
 			#if( configSUPPORT_STATIC_ALLOCATION == 1 )
 			{
@@ -393,27 +417,34 @@ static void prvInitialiseNewTimer(	const char * const pcTimerName,
 									Timer_t *pxNewTimer ) /*lint !e971 Unqualified char types are allowed for strings and single characters only. */
 {
 	/* 0 is not a valid value for xTimerPeriodInTicks. */
-	configASSERT( ( xTimerPeriodInTicks > 0 ) );
+	configASSERT( ( xTimerPeriodInTicks > 0 ) ); //timer的周期不能为0
 
 	if( pxNewTimer != NULL )
 	{
 		/* Ensure the infrastructure used by the timer service task has been
 		created/initialised. */
-		prvCheckForValidListAndQueue();
+		prvCheckForValidListAndQueue();  //先保证创建了timer要用到的queue, 要么在创建timer的时候创建, 要么在创建守护进程的时候创建 
 
 		/* Initialise the timer structure members using the function
 		parameters. */
-		pxNewTimer->pcTimerName = pcTimerName;
+		pxNewTimer->pcTimerName = pcTimerName;    //初始化
 		pxNewTimer->xTimerPeriodInTicks = xTimerPeriodInTicks;
 		pxNewTimer->uxAutoReload = uxAutoReload;
 		pxNewTimer->pvTimerID = pvTimerID;
 		pxNewTimer->pxCallbackFunction = pxCallbackFunction;
+
 		vListInitialiseItem( &( pxNewTimer->xTimerListItem ) );
 		traceTIMER_CREATE( pxNewTimer );
 	}
 }
 /*-----------------------------------------------------------*/
 
+
+
+
+
+
+//timer的所有命令调用都是通过消息同步来实现的, 命令API发起请求, 在守护进程中统一处理所有的command请求
 BaseType_t xTimerGenericCommand( TimerHandle_t xTimer, const BaseType_t xCommandID, const TickType_t xOptionalValue, BaseType_t * const pxHigherPriorityTaskWoken, const TickType_t xTicksToWait )
 {
 BaseType_t xReturn = pdFAIL;
@@ -428,21 +459,22 @@ DaemonTaskMessage_t xMessage;
 		/* Send a command to the timer service task to start the xTimer timer. */
 		xMessage.xMessageID = xCommandID;
 		xMessage.u.xTimerParameters.xMessageValue = xOptionalValue;
-		xMessage.u.xTimerParameters.pxTimer = ( Timer_t * ) xTimer;
+		xMessage.u.xTimerParameters.pxTimer = ( Timer_t * ) xTimer;   //往哪个timer发送command, 组一个消息, command可以带值
 
-		if( xCommandID < tmrFIRST_FROM_ISR_COMMAND )
+		if( xCommandID < tmrFIRST_FROM_ISR_COMMAND )  //start/stop/reset/delete timer/change period
 		{
 			if( xTaskGetSchedulerState() == taskSCHEDULER_RUNNING )
 			{
-				xReturn = xQueueSendToBack( xTimerQueue, &xMessage, xTicksToWait );
+				xReturn = xQueueSendToBack( xTimerQueue, &xMessage, xTicksToWait );  //按照先后顺序插入到队列
 			}
 			else
 			{
-				xReturn = xQueueSendToBack( xTimerQueue, &xMessage, tmrNO_DELAY );
+				xReturn = xQueueSendToBack( xTimerQueue, &xMessage, tmrNO_DELAY );   //如果queue满了, 不会等, 直接返回
 			}
 		}
 		else
 		{
+			//从中断里面发同步消息给守护进程
 			xReturn = xQueueSendToBackFromISR( xTimerQueue, &xMessage, pxHigherPriorityTaskWoken );
 		}
 
@@ -461,7 +493,7 @@ TaskHandle_t xTimerGetTimerDaemonTaskHandle( void )
 {
 	/* If xTimerGetTimerDaemonTaskHandle() is called before the scheduler has been
 	started, then xTimerTaskHandle will be NULL. */
-	configASSERT( ( xTimerTaskHandle != NULL ) );
+	configASSERT( ( xTimerTaskHandle != NULL ) );  //在调度器开启的时候才会创建守护进程
 	return xTimerTaskHandle;
 }
 /*-----------------------------------------------------------*/
@@ -471,7 +503,7 @@ TickType_t xTimerGetPeriod( TimerHandle_t xTimer )
 Timer_t *pxTimer = ( Timer_t * ) xTimer;
 
 	configASSERT( xTimer );
-	return pxTimer->xTimerPeriodInTicks;
+	return pxTimer->xTimerPeriodInTicks;  //配置的时候这个值不能为0
 }
 /*-----------------------------------------------------------*/
 
@@ -481,7 +513,7 @@ Timer_t * pxTimer = ( Timer_t * ) xTimer;
 TickType_t xReturn;
 
 	configASSERT( xTimer );
-	xReturn = listGET_LIST_ITEM_VALUE( &( pxTimer->xTimerListItem ) );
+	xReturn = listGET_LIST_ITEM_VALUE( &( pxTimer->xTimerListItem ) );  //item value表示超时时间, 根据这个值来排列链表
 	return xReturn;
 }
 /*-----------------------------------------------------------*/
@@ -495,6 +527,13 @@ Timer_t *pxTimer = ( Timer_t * ) xTimer;
 }
 /*-----------------------------------------------------------*/
 
+
+
+
+
+//此时timer超时, xTimeNow >= xNextExpireTime
+//xTimeNow是当前的时间
+//xNextExpireTime是判断超时的时间点
 static void prvProcessExpiredTimer( const TickType_t xNextExpireTime, const TickType_t xTimeNow )
 {
 BaseType_t xResult;
@@ -502,6 +541,7 @@ Timer_t * const pxTimer = ( Timer_t * ) listGET_OWNER_OF_HEAD_ENTRY( pxCurrentTi
 
 	/* Remove the timer from the list of active timers.  A check has already
 	been performed to ensure the list is not empty. */
+	//从链表移除
 	( void ) uxListRemove( &( pxTimer->xTimerListItem ) );
 	traceTIMER_EXPIRED( pxTimer );
 
@@ -512,10 +552,12 @@ Timer_t * const pxTimer = ( Timer_t * ) listGET_OWNER_OF_HEAD_ENTRY( pxCurrentTi
 		/* The timer is inserted into a list using a time relative to anything
 		other than the current time.  It will therefore be inserted into the
 		correct list relative to the time this task thinks it is now. */
+		//timer restart, 需要重新插入到链表
 		if( prvInsertTimerInActiveList( pxTimer, ( xNextExpireTime + pxTimer->xTimerPeriodInTicks ), xTimeNow, xNextExpireTime ) != pdFALSE )
 		{
 			/* The timer expired before it was added to the active timer
 			list.  Reload it now.  */
+			//处理超时的任务, 
 			xResult = xTimerGenericCommand( pxTimer, tmrCOMMAND_START_DONT_TRACE, xNextExpireTime, NULL, tmrNO_DELAY );
 			configASSERT( xResult );
 			( void ) xResult;
@@ -524,17 +566,21 @@ Timer_t * const pxTimer = ( Timer_t * ) listGET_OWNER_OF_HEAD_ENTRY( pxCurrentTi
 		{
 			mtCOVERAGE_TEST_MARKER();
 		}
-	}
+	} //one-shot timer, 超时之后直接从链表移除后就完了
 	else
 	{
 		mtCOVERAGE_TEST_MARKER();
 	}
 
 	/* Call the timer callback. */
-	pxTimer->pxCallbackFunction( ( TimerHandle_t ) pxTimer );
+	pxTimer->pxCallbackFunction( ( TimerHandle_t ) pxTimer );  //调用超时回调函数
 }
 /*-----------------------------------------------------------*/
 
+
+
+
+//守护进程函数
 static void prvTimerTask( void *pvParameters )
 {
 TickType_t xNextExpireTime;
@@ -559,11 +605,11 @@ BaseType_t xListWasEmpty;
 	{
 		/* Query the timers list to see if it contains any timers, and if so,
 		obtain the time at which the next timer will expire. */
-		xNextExpireTime = prvGetNextExpireTime( &xListWasEmpty );
+		xNextExpireTime = prvGetNextExpireTime( &xListWasEmpty );  //取下一个timer要超时的时间
 
 		/* If a timer has expired, process it.  Otherwise, block this task
 		until either a timer does expire, or a command is received. */
-		prvProcessTimerOrBlockTask( xNextExpireTime, xListWasEmpty );
+		prvProcessTimerOrBlockTask( xNextExpireTime, xListWasEmpty ); //block任务,或者处理timer超时
 
 		/* Empty the command queue. */
 		prvProcessReceivedCommands();
@@ -583,14 +629,17 @@ BaseType_t xTimerListsWereSwitched;
 		then don't process this timer as any timers that remained in the list
 		when the lists were switched will have been processed within the
 		prvSampleTimeNow() function. */
+		//获取current tick
 		xTimeNow = prvSampleTimeNow( &xTimerListsWereSwitched );
+		//tick还没有溢出, 则需要计算timer是否超时
 		if( xTimerListsWereSwitched == pdFALSE )
 		{
 			/* The tick count has not overflowed, has the timer expired? */
+			//当前timer链表中非空, 并且, 已经有timer超时
 			if( ( xListWasEmpty == pdFALSE ) && ( xNextExpireTime <= xTimeNow ) )
 			{
 				( void ) xTaskResumeAll();
-				prvProcessExpiredTimer( xNextExpireTime, xTimeNow );
+				prvProcessExpiredTimer( xNextExpireTime, xTimeNow );  //处理超时的任务
 			}
 			else
 			{
@@ -607,8 +656,10 @@ BaseType_t xTimerListsWereSwitched;
 					xListWasEmpty = listLIST_IS_EMPTY( pxOverflowTimerList );
 				}
 
+				//等待消息或者超时, 如果两个链表均为空, 则进入无限等待状态
 				vQueueWaitForMessageRestricted( xTimerQueue, ( xNextExpireTime - xTimeNow ), xListWasEmpty );
 
+				//进行任务抢占
 				if( xTaskResumeAll() == pdFALSE )
 				{
 					/* Yield to wait for either a command to arrive, or the
@@ -623,6 +674,7 @@ BaseType_t xTimerListsWereSwitched;
 				}
 			}
 		}
+		//tick已经溢出的情况下, 所有的超时已经被在前面被处理完了, 而且已经交换了timer链表, 只需要继续处理queue里面的消息即可
 		else
 		{
 			( void ) xTaskResumeAll();
@@ -631,6 +683,8 @@ BaseType_t xTimerListsWereSwitched;
 }
 /*-----------------------------------------------------------*/
 
+//找到下一个要被解锁的任务的超时时间
+//如果链表中没有任务, 也要赋值为0, 当timer=0的时候, 也就是溢出的时候, 需要交换timer的两个链表
 static TickType_t prvGetNextExpireTime( BaseType_t * const pxListWasEmpty )
 {
 TickType_t xNextExpireTime;
@@ -645,12 +699,12 @@ TickType_t xNextExpireTime;
 	*pxListWasEmpty = listLIST_IS_EMPTY( pxCurrentTimerList );
 	if( *pxListWasEmpty == pdFALSE )
 	{
-		xNextExpireTime = listGET_ITEM_VALUE_OF_HEAD_ENTRY( pxCurrentTimerList );
+		xNextExpireTime = listGET_ITEM_VALUE_OF_HEAD_ENTRY( pxCurrentTimerList );  //找到链表第一个item, 这个就是最先被解锁的timer
 	}
 	else
 	{
 		/* Ensure the task unblocks when the tick count rolls over. */
-		xNextExpireTime = ( TickType_t ) 0U;
+		xNextExpireTime = ( TickType_t ) 0U;   //当前没有timer
 	}
 
 	return xNextExpireTime;
@@ -664,9 +718,9 @@ PRIVILEGED_DATA static TickType_t xLastTime = ( TickType_t ) 0U; /*lint !e956 Va
 
 	xTimeNow = xTaskGetTickCount();
 
-	if( xTimeNow < xLastTime )
+	if( xTimeNow < xLastTime ) //overflow
 	{
-		prvSwitchTimerLists();
+		prvSwitchTimerLists();   //用来处理tick counter溢出, 交换两个链表
 		*pxTimerListsWereSwitched = pdTRUE;
 	}
 	else
@@ -680,6 +734,11 @@ PRIVILEGED_DATA static TickType_t xLastTime = ( TickType_t ) 0U; /*lint !e956 Va
 }
 /*-----------------------------------------------------------*/
 
+
+
+
+
+//把timer重新插入到链表中
 static BaseType_t prvInsertTimerInActiveList( Timer_t * const pxTimer, const TickType_t xNextExpiryTime, const TickType_t xTimeNow, const TickType_t xCommandTime )
 {
 BaseType_t xProcessTimerNow = pdFALSE;
@@ -687,31 +746,33 @@ BaseType_t xProcessTimerNow = pdFALSE;
 	listSET_LIST_ITEM_VALUE( &( pxTimer->xTimerListItem ), xNextExpiryTime );
 	listSET_LIST_ITEM_OWNER( &( pxTimer->xTimerListItem ), pxTimer );
 
-	if( xNextExpiryTime <= xTimeNow )
+	if( xNextExpiryTime <= xTimeNow )  //timer在加到新的链表之前已经超时
 	{
 		/* Has the expiry time elapsed between the command to start/reset a
 		timer was issued, and the time the command was processed? */
+		//重新加了超时周期后还是处于超时状态, 需要重新更新xNextExpiryTime
 		if( ( ( TickType_t ) ( xTimeNow - xCommandTime ) ) >= pxTimer->xTimerPeriodInTicks ) /*lint !e961 MISRA exception as the casts are only redundant for some ports. */
 		{
 			/* The time between a command being issued and the command being
 			processed actually exceeds the timers period.  */
 			xProcessTimerNow = pdTRUE;
 		}
-		else
+		else  //xNextExpiryTime溢出
 		{
 			vListInsert( pxOverflowTimerList, &( pxTimer->xTimerListItem ) );
 		}
 	}
-	else
+	else //xTimeNow < xNextExpiryTime
 	{
-		if( ( xTimeNow < xCommandTime ) && ( xNextExpiryTime >= xCommandTime ) )
+		//xTimeNow溢出
+		if( ( xTimeNow < xCommandTime ) && ( xNextExpiryTime >= xCommandTime ) )  //tick已经溢出了, 但是超时的时间点在timer最大范围内, 说明已经timeout了
 		{
 			/* If, since the command was issued, the tick count has overflowed
 			but the expiry time has not, then the timer must have already passed
 			its expiry time and should be processed immediately. */
 			xProcessTimerNow = pdTRUE;
 		}
-		else
+		else //等待超时
 		{
 			vListInsert( pxCurrentTimerList, &( pxTimer->xTimerListItem ) );
 		}
@@ -719,6 +780,13 @@ BaseType_t xProcessTimerNow = pdFALSE;
 
 	return xProcessTimerNow;
 }
+
+
+
+
+
+
+
 /*-----------------------------------------------------------*/
 
 static void	prvProcessReceivedCommands( void )
@@ -730,6 +798,7 @@ TickType_t xTimeNow;
 
 	while( xQueueReceive( xTimerQueue, &xMessage, tmrNO_DELAY ) != pdFAIL ) /*lint !e603 xMessage does not have to be initialised as it is passed out, not in, and it is not used unless xQueueReceive() returns pdTRUE. */
 	{
+		//处理守护进程的消息, 通过message id来区分是不是从中断中发出来的消息
 		#if ( INCLUDE_xTimerPendFunctionCall == 1 )
 		{
 			/* Negative commands are pended function calls rather than timer
@@ -742,6 +811,7 @@ TickType_t xTimeNow;
 				callback be executed.  Check the callback is not NULL. */
 				configASSERT( pxCallback );
 
+				//执行消息的回调函数
 				/* Call the function. */
 				pxCallback->pxCallbackFunction( pxCallback->pvParameter1, pxCallback->ulParameter2 );
 			}
@@ -752,6 +822,8 @@ TickType_t xTimeNow;
 		}
 		#endif /* INCLUDE_xTimerPendFunctionCall */
 
+
+		//处理timer任务的消息
 		/* Commands that are positive are timer commands rather than pended
 		function calls. */
 		if( xMessage.xMessageID >= ( BaseType_t ) 0 )
@@ -760,6 +832,7 @@ TickType_t xTimeNow;
 			software timer. */
 			pxTimer = xMessage.u.xTimerParameters.pxTimer;
 
+			//如果timer已经在链表中, 直接从链表移除??
 			if( listIS_CONTAINED_WITHIN( NULL, &( pxTimer->xTimerListItem ) ) == pdFALSE )
 			{
 				/* The timer is in a list, remove it. */
@@ -788,10 +861,12 @@ TickType_t xTimeNow;
 			    case tmrCOMMAND_RESET_FROM_ISR :
 				case tmrCOMMAND_START_DONT_TRACE :
 					/* Start or restart a timer. */
+					//如果timer还需要继续保持, 则还要重新加入到链表中, 更新timer value
 					if( prvInsertTimerInActiveList( pxTimer,  xMessage.u.xTimerParameters.xMessageValue + pxTimer->xTimerPeriodInTicks, xTimeNow, xMessage.u.xTimerParameters.xMessageValue ) != pdFALSE )
 					{
 						/* The timer expired before it was added to the active
 						timer list.  Process it now. */
+						//处理超时的任务
 						pxTimer->pxCallbackFunction( ( TimerHandle_t ) pxTimer );
 						traceTIMER_EXPIRED( pxTimer );
 
@@ -805,7 +880,7 @@ TickType_t xTimeNow;
 						{
 							mtCOVERAGE_TEST_MARKER();
 						}
-					}
+					} //如果没有超时的任务, 则已经加入到overflow list/current list
 					else
 					{
 						mtCOVERAGE_TEST_MARKER();
@@ -829,6 +904,7 @@ TickType_t xTimeNow;
 					be zero the next expiry time can only be in the future,
 					meaning (unlike for the xTimerStart() case above) there is
 					no fail case that needs to be handled here. */
+					//需要重新更新超时的时间
 					( void ) prvInsertTimerInActiveList( pxTimer, ( xTimeNow + pxTimer->xTimerPeriodInTicks ), xTimeNow, xTimeNow );
 					break;
 
@@ -879,20 +955,24 @@ BaseType_t xResult;
 	If there are any timers still referenced from the current timer list
 	then they must have expired and should be processed before the lists
 	are switched. */
+	//如果tick已经溢出了, 但是当前链表里(放的都是超时时间在最大时间范围内的timer)还有等待超时的timer, 此时这些timer应该全部超时了, 必须把他们全部清空
 	while( listLIST_IS_EMPTY( pxCurrentTimerList ) == pdFALSE )
 	{
 		xNextExpireTime = listGET_ITEM_VALUE_OF_HEAD_ENTRY( pxCurrentTimerList );
 
+		//从当前链表移除
 		/* Remove the timer from the list. */
 		pxTimer = ( Timer_t * ) listGET_OWNER_OF_HEAD_ENTRY( pxCurrentTimerList );
 		( void ) uxListRemove( &( pxTimer->xTimerListItem ) );
 		traceTIMER_EXPIRED( pxTimer );
 
+		//执行超时回调函数
 		/* Execute its callback, then send a command to restart the timer if
 		it is an auto-reload timer.  It cannot be restarted here as the lists
 		have not yet been switched. */
-		pxTimer->pxCallbackFunction( ( TimerHandle_t ) pxTimer );
+		pxTimer->pxCallbackFunction( ( TimerHandle_t ) pxTimer );  //timer超时回调函数
 
+		//如果是周期timer, 则需要重置下次超时的时间, 此时timer item 肯定会在overflow list
 		if( pxTimer->uxAutoReload == ( UBaseType_t ) pdTRUE )
 		{
 			/* Calculate the reload value, and if the reload value results in
@@ -901,6 +981,7 @@ BaseType_t xResult;
 			processed again within this loop.  Otherwise a command should be sent
 			to restart the timer to ensure it is only inserted into a list after
 			the lists have been swapped. */
+			//超时时间还是在当前的链表中, 所以重新计算超时, 这里timer的周期时间xTimerPeriodInTicks不能为0
 			xReloadTime = ( xNextExpireTime + pxTimer->xTimerPeriodInTicks );
 			if( xReloadTime > xNextExpireTime )
 			{
@@ -908,7 +989,7 @@ BaseType_t xResult;
 				listSET_LIST_ITEM_OWNER( &( pxTimer->xTimerListItem ), pxTimer );
 				vListInsert( pxCurrentTimerList, &( pxTimer->xTimerListItem ) );
 			}
-			else
+			else  //如果timer重置后出现tick溢出, 则会被加入到交换后的链表中, 这里只是发个消息出去
 			{
 				xResult = xTimerGenericCommand( pxTimer, tmrCOMMAND_START_DONT_TRACE, xNextExpireTime, NULL, tmrNO_DELAY );
 				configASSERT( xResult );
@@ -921,6 +1002,7 @@ BaseType_t xResult;
 		}
 	}
 
+	//交换两个链表, 然后处理queue里面的消息
 	pxTemp = pxCurrentTimerList;
 	pxCurrentTimerList = pxOverflowTimerList;
 	pxOverflowTimerList = pxTemp;
@@ -936,12 +1018,12 @@ static void prvCheckForValidListAndQueue( void )
 	{
 		if( xTimerQueue == NULL )
 		{
-			vListInitialise( &xActiveTimerList1 );
+			vListInitialise( &xActiveTimerList1 );   //初始化全局链表
 			vListInitialise( &xActiveTimerList2 );
 			pxCurrentTimerList = &xActiveTimerList1;
 			pxOverflowTimerList = &xActiveTimerList2;
 
-			#if( configSUPPORT_STATIC_ALLOCATION == 1 )
+			#if( configSUPPORT_STATIC_ALLOCATION == 1 )  //创建一个新的message queue
 			{
 				/* The timer queue is allocated statically in case
 				configSUPPORT_DYNAMIC_ALLOCATION is 0. */
@@ -960,7 +1042,7 @@ static void prvCheckForValidListAndQueue( void )
 			{
 				if( xTimerQueue != NULL )
 				{
-					vQueueAddToRegistry( xTimerQueue, "TmrQ" );
+					vQueueAddToRegistry( xTimerQueue, "TmrQ" );  //把queue注册到queue list
 				}
 				else
 				{
@@ -1030,6 +1112,13 @@ Timer_t * const pxTimer = ( Timer_t * ) xTimer;
 }
 /*-----------------------------------------------------------*/
 
+
+
+
+
+
+
+//从中断中给任务发消息, 由任务来处理比较耗时的中断处理
 #if( INCLUDE_xTimerPendFunctionCall == 1 )
 
 	BaseType_t xTimerPendFunctionCallFromISR( PendedFunction_t xFunctionToPend, void *pvParameter1, uint32_t ulParameter2, BaseType_t *pxHigherPriorityTaskWoken )

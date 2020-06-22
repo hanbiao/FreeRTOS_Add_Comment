@@ -88,7 +88,7 @@ typedef QueueHandle_t SemaphoreHandle_t;
  * <pre>vSemaphoreCreateBinary( SemaphoreHandle_t xSemaphore )</pre>
  *
  * In many usage scenarios it is faster and more memory efficient to use a
- * direct to task notification in place of a binary semaphore!
+ * direct to task notification in place of a binary semaphore!   //可以用任务通知来代替二进制信号量, 会更高效
  * http://www.freertos.org/RTOS-task-notifications.html
  *
  * This old vSemaphoreCreateBinary() macro is now deprecated in favour of the
@@ -132,6 +132,9 @@ typedef QueueHandle_t SemaphoreHandle_t;
  * \defgroup vSemaphoreCreateBinary vSemaphoreCreateBinary
  * \ingroup Semaphores
  */
+ //两个接口的区别是: 这个接口在创建的时候就可以Give, 所以第一次调Take的时候就能取到信号量
+ //但是第二个接口,只是创建信号量, Take之前首先需要被Give
+ //第一个接口现在不建议使用
 #if( configSUPPORT_DYNAMIC_ALLOCATION == 1 )
 	#define vSemaphoreCreateBinary( xSemaphore )																							\
 		{																																	\

@@ -113,6 +113,7 @@ void vListInitialiseItem( ListItem_t * const pxItem )
 }
 /*-----------------------------------------------------------*/
 
+//按先后顺序插入, 后插入的的放到链表的末尾
 void vListInsertEnd( List_t * const pxList, ListItem_t * const pxNewListItem )
 {
 ListItem_t * const pxIndex = pxList->pxIndex;
@@ -142,6 +143,8 @@ ListItem_t * const pxIndex = pxList->pxIndex;
 }
 /*-----------------------------------------------------------*/
 
+//按照优先级顺序/超时时间排列插入, 优先级高的插入到链表的头上, 最早超时的放到链表的头上
+//如果是相同优先级, 则按先后顺序处插入, 后插入的要放到后面的位置, 
 void vListInsert( List_t * const pxList, ListItem_t * const pxNewListItem )
 {
 ListItem_t *pxIterator;
@@ -189,6 +192,7 @@ const TickType_t xValueOfInsertion = pxNewListItem->xItemValue;
 			   before vTaskStartScheduler() has been called?).
 		**********************************************************************/
 
+		//找插入的位置, 值小的放在前面, 如果值相等也会再往后找一个
 		for( pxIterator = ( ListItem_t * ) &( pxList->xListEnd ); pxIterator->pxNext->xItemValue <= xValueOfInsertion; pxIterator = pxIterator->pxNext ) /*lint !e826 !e740 The mini list structure is used as the list end to save RAM.  This is checked and valid. */
 		{
 			/* There is nothing to do here, just iterating to the wanted
